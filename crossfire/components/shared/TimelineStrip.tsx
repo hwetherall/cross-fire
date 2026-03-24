@@ -15,7 +15,7 @@ export function TimelineStrip({ timeline }: { timeline: TimelineEntry[] }) {
   });
 
   return (
-    <p className="text-[11px] text-gray-500 leading-relaxed">
+    <p className="text-[11px] text-gray-500 dark:text-zinc-400 leading-relaxed">
       {parts.join(' → ')}
     </p>
   );

@@ -18,10 +18,17 @@ export type ResolutionStatus = 'resolved' | 'unresolved' | 'escalated';
 
 export type DocumentType =
   | 'exec-summary'
-  | 'full-summary'
+  | 'market-research'
   | 'demand-validation'
-  | 'competitor-analysis'
-  | 'market-research';
+  | 'competitor-intelligence'
+  | 'product-technology'
+  | 'go-to-market'
+  | 'business-model'
+  | 'finance-operations'
+  | 'unit-economics'
+  | 'team-execution'
+  | 'legal-ip'
+  | 'full-summary';
 
 export interface DebateConfig {
   document: string;
@@ -59,6 +66,8 @@ export interface RedTeamOutput {
   objections: Objection[];
   resolvedFromPrior?: string[];
   summary: string;
+  earlyTermination?: boolean;
+  terminationReason?: string;
 }
 
 export interface BlueTeamOutput {

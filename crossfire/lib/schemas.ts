@@ -31,10 +31,17 @@ export const ResolutionStatusSchema = z.enum([
 
 export const DocumentTypeSchema = z.enum([
   'exec-summary',
-  'full-summary',
-  'demand-validation',
-  'competitor-analysis',
   'market-research',
+  'demand-validation',
+  'competitor-intelligence',
+  'product-technology',
+  'go-to-market',
+  'business-model',
+  'finance-operations',
+  'unit-economics',
+  'team-execution',
+  'legal-ip',
+  'full-summary',
 ]);
 
 export const ObjectionSchema = z.object({
@@ -51,6 +58,8 @@ export const RedTeamOutputSchema = z.object({
   objections: z.array(ObjectionSchema),
   resolvedFromPrior: z.array(z.string()).optional(),
   summary: z.string(),
+  earlyTermination: z.boolean().optional(),
+  terminationReason: z.string().optional(),
 });
 
 export const ResponseSchema = z.object({

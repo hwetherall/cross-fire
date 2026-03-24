@@ -18,10 +18,10 @@ export function IssueRow({ issue, isExpanded, onToggle }: IssueRowProps) {
       <button
         type="button"
         onClick={onToggle}
-        className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 cursor-pointer transition-colors"
+        className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 cursor-pointer transition-colors dark:hover:bg-zinc-800/80"
       >
         {/* ID */}
-        <span className="text-[11px] font-mono text-gray-400 w-[44px] shrink-0">
+        <span className="text-[11px] font-mono text-gray-400 dark:text-zinc-500 w-[44px] shrink-0">
           {issue.id}
         </span>
 
@@ -32,7 +32,7 @@ export function IssueRow({ issue, isExpanded, onToggle }: IssueRowProps) {
         <CategoryBadge category={issue.category} />
 
         {/* Title */}
-        <span className="text-[13px] text-gray-800 truncate flex-1 min-w-0">
+        <span className="text-[13px] text-gray-800 dark:text-zinc-200 truncate flex-1 min-w-0">
           {issue.objection}
         </span>
 
@@ -41,7 +41,7 @@ export function IssueRow({ issue, isExpanded, onToggle }: IssueRowProps) {
 
         {/* Chevron */}
         <svg
-          className={`w-4 h-4 text-gray-400 shrink-0 transition-transform ${
+          className={`w-4 h-4 text-gray-400 dark:text-zinc-500 shrink-0 transition-transform ${
             isExpanded ? 'rotate-90' : ''
           }`}
           fill="none"

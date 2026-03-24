@@ -71,17 +71,17 @@ export function VerdictBar({ issues, totalRounds }: VerdictBarProps) {
   ).length;
 
   return (
-    <div className="flex items-center justify-between gap-4 rounded-lg bg-gray-50 px-4 py-3">
+    <div className="flex items-center justify-between gap-4 rounded-lg bg-gray-50 px-4 py-3 dark:bg-zinc-900">
       <div className="flex items-center gap-3 min-w-0">
         <span
           className="inline-block w-[10px] h-[10px] rounded-full shrink-0"
           style={{ backgroundColor: dotColors[state] }}
         />
-        <span className="text-[15px] font-medium text-gray-900 truncate">
+        <span className="text-[15px] font-medium text-gray-900 dark:text-zinc-100 truncate">
           {text}
         </span>
       </div>
-      <span className="text-[12px] text-gray-500 shrink-0">
+      <span className="text-[12px] text-gray-500 dark:text-zinc-400 shrink-0">
         {totalRounds} round{totalRounds !== 1 ? 's' : ''}, {issues.length} objection{issues.length !== 1 ? 's' : ''}, {fixCount} fix{fixCount !== 1 ? 'es' : ''} proposed
       </span>
     </div>

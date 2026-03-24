@@ -1,5 +1,5 @@
 import type { DebateConfig, DebateRound, RedTeamOutput, BlueTeamOutput, FinalSummary, RevisedDocument, DocumentChange, Objection, ObjectionCategory } from './types';
-import { RedTeamOutputSchema, BlueTeamOutputSchema, ChangelogSchema } from './schemas';
+import { RedTeamOutputSchema, BlueTeamOutputSchema } from './schemas';
 import { callOpenRouter } from './openrouter';
 import { getModelId } from './models';
 import {
@@ -8,8 +8,6 @@ import {
   buildRedTeamFollowUpUserPrompt,
   buildBlueTeamSystemPrompt,
   buildBlueTeamUserPrompt,
-  buildChangelogSystemPrompt,
-  buildChangelogUserPrompt,
   buildRewriteSystemPrompt,
   buildRewriteUserPrompt,
 } from './prompts';
@@ -72,6 +70,31 @@ async function callWithRetry<T>(
   throw new Error(`Failed to get valid response after ${maxRetries + 1} attempts`);
 }
 
+// Change #7: Extract changelog from inline change markers
+function extractChangesFromMarkers(document: string): DocumentChange[] {
+  const changes: DocumentChange[] = [];
+  const pattern = /<!--CHANGE objectionId="([^"]*)" reason="([^"]*)"-->([\s\S]*?)<!--\/CHANGE-->/g;
+  let match;
+
+  while ((match = pattern.exec(document)) !== null) {
+    changes.push({
+      location: `Near objection ${match[1]}`,
+      original: '(see original document)',
+      revised: match[3].trim(),
+      reason: match[2],
+      objectionIds: [match[1]],
+    });
+  }
+
+  return changes;
+}
+
+// Strip change markers from the final document
+function stripChangeMarkers(document: string): string {
+  return document.replace(/<!--CHANGE objectionId="[^"]*" reason="[^"]*"-->/g, '')
+    .replace(/<!--\/CHANGE-->/g, '');
+}
+
 export async function* runDebate(config: DebateConfig): AsyncGenerator<DebateEvent> {
   const history: DebateRound[] = [];
   const redModelId = getModelId(config.redTeamModel);
@@ -104,6 +127,17 @@ export async function* runDebate(config: DebateConfig): AsyncGenerator<DebateEve
       maxTokens
     );
 
+    // Change #9: Check for early termination signal
+    if (redParsed.earlyTermination && round > 1) {
+      // Emit the red round with no new objections, then break
+      yield {
+        type: 'redRound',
+        data: { roundNumber: round, redTeam: redParsed },
+      };
+      yield { type: 'progress', data: { round, phase: redParsed.terminationReason || 'Red Team ended debate early — all substantive issues addressed.' } };
+      break;
+    }
+
     // Emit Red Team output immediately so the UI can render objections
     // while Blue Team is still generating responses.
     yield {
@@ -122,6 +156,7 @@ export async function* runDebate(config: DebateConfig): AsyncGenerator<DebateEve
     if (config.searchEnabled) {
       const searchItems = redParsed.objections.filter((o) => o.requiresSearch);
       if (searchItems.length > 0) {
+        yield { type: 'progress', data: { round, phase: `Verifying ${searchItems.length} claim(s)...` } };
         searchResults = await runSearches(searchItems);
       }
     }
@@ -158,39 +193,28 @@ export async function* runDebate(config: DebateConfig): AsyncGenerator<DebateEve
     history.push(debateRound);
     yield { type: 'round', data: debateRound };
 
-    // 7. Early termination
+    // 7. Early termination checks
     const allResolved = blueParsed.responses.every((r) => r.status === 'resolved');
-    if (allResolved && round > 1) break;
+    const noNewObjections = round > 1 && redParsed.objections.length === 0;
+    if ((allResolved || noNewObjections) && round > 1) {
+      yield { type: 'progress', data: { round, phase: 'All items resolved — ending debate early.' } };
+      break;
+    }
   }
 
   // 8. Generate final summary
   yield { type: 'summary', data: generateFinalSummary(history) };
 
-  // 9. Generate revised document using Opus 4.6 (two-pass approach)
+  // 9. Generate revised document (Change #7: single merged call with inline markers)
   const revisionItems = deriveRevisionItems(history);
   if (revisionItems.length > 0) {
     const rewriteModelId = getModelId('opus-4.6');
     // Use generous token budget — the rewrite outputs the full document
     const rewriteMaxTokens = Math.max(16384, maxTokens * 3);
 
-    // Pass 1: Generate structured changelog (small JSON output — reliable)
-    yield { type: 'progress', data: { round: 0, phase: 'Generating changelog...' } };
-
-    const changelog = await callWithRetry<{ changes: DocumentChange[]; summary: string }>(
-      rewriteModelId,
-      [
-        { role: 'system', content: buildChangelogSystemPrompt() },
-        { role: 'user', content: buildChangelogUserPrompt(config, revisionItems) },
-      ],
-      ChangelogSchema,
-      0.3,
-      4096
-    );
-
-    // Pass 2: Generate rewritten document (plain text output — no JSON escaping)
     yield { type: 'progress', data: { round: 0, phase: 'Rewriting document with proposed revisions...' } };
 
-    const rewrittenDocument = await callOpenRouter({
+    const rawRewrite = await callOpenRouter({
       model: rewriteModelId,
       messages: [
         { role: 'system', content: buildRewriteSystemPrompt() },
@@ -201,12 +225,17 @@ export async function* runDebate(config: DebateConfig): AsyncGenerator<DebateEve
       jsonMode: false,
     });
 
+    // Extract changelog from inline markers, then strip them for clean document
+    const changes = extractChangesFromMarkers(rawRewrite);
+    const cleanDocument = stripChangeMarkers(rawRewrite).trim();
+    const changeSummary = `${changes.length} changes applied across ${revisionItems.length} revision items.`;
+
     yield {
       type: 'rewrite',
       data: {
-        rewrittenDocument: rewrittenDocument.trim(),
-        changes: changelog.changes,
-        summary: changelog.summary,
+        rewrittenDocument: cleanDocument,
+        changes,
+        summary: changeSummary,
       },
     };
   }

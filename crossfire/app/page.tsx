@@ -9,6 +9,7 @@ import { ContextPanel } from '@/components/ContextPanel';
 import { ModelSelector } from '@/components/ModelSelector';
 import { DebateControls } from '@/components/DebateControls';
 import { OutputPanel } from '@/components/output/OutputPanel';
+import { ThemeToggle } from '@/components/ThemeToggle';
 
 export default function Home() {
   // Document
@@ -215,25 +216,28 @@ export default function Home() {
   );
 
   return (
-    <div className="flex h-screen overflow-hidden bg-gray-50">
+    <div className="flex h-screen overflow-hidden bg-gray-50 dark:bg-zinc-950">
       {/* Left Panel — Input */}
-      <div className="w-full lg:w-[35%] lg:min-w-[380px] lg:max-w-[480px] border-r border-gray-200 bg-white overflow-y-auto">
+      <div className="w-full lg:w-[35%] lg:min-w-[380px] lg:max-w-[480px] border-r border-gray-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 overflow-y-auto">
         <div className="p-4 space-y-4">
           {/* Header */}
-          <div>
-            <h1 className="text-xl font-bold text-gray-900">Crossfire</h1>
-            <p className="text-xs text-gray-500">Innovera Debate Engine</p>
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h1 className="text-xl font-bold text-gray-900 dark:text-zinc-100">Crossfire</h1>
+              <p className="text-xs text-gray-500 dark:text-zinc-400">Innovera Debate Engine</p>
+            </div>
+            <ThemeToggle />
           </div>
 
           {/* Document Input */}
           <DocumentInput value={document} onChange={setDocument} />
 
           {/* Context Panel — Collapsible */}
-          <div className="border border-gray-200 rounded-lg overflow-hidden">
+          <div className="border border-gray-200 dark:border-zinc-700 rounded-lg overflow-hidden">
             <button
               type="button"
               onClick={() => setContextOpen(!contextOpen)}
-              className="w-full flex items-center justify-between px-4 py-2 bg-gray-50 text-sm font-medium text-gray-700 hover:bg-gray-100"
+              className="w-full flex items-center justify-between px-4 py-2 bg-gray-50 text-sm font-medium text-gray-700 hover:bg-gray-100 dark:bg-zinc-800/80 dark:text-zinc-200 dark:hover:bg-zinc-800"
             >
               Client Persona & Settings
               <span className={`transition-transform ${contextOpen ? 'rotate-180' : ''}`}>
@@ -241,9 +245,9 @@ export default function Home() {
               </span>
             </button>
             {contextOpen && (
-              <div className="p-4 space-y-4 border-t border-gray-200">
+              <div className="p-4 space-y-4 border-t border-gray-200 dark:border-zinc-700">
                 <ContextPanel config={contextConfig} onChange={setContextConfig} />
-                <div className="border-t border-gray-100 pt-4">
+                <div className="border-t border-gray-100 dark:border-zinc-800 pt-4">
                   <ModelSelector
                     redTeamModel={redTeamModel}
                     blueTeamModel={blueTeamModel}
@@ -271,7 +275,7 @@ export default function Home() {
       </div>
 
       {/* Right Panel — Output */}
-      <div className="flex-1 overflow-hidden">
+      <div className="flex-1 overflow-hidden bg-gray-50 dark:bg-zinc-950">
         <OutputPanel
           rounds={rounds}
           summary={summary}
