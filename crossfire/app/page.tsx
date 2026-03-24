@@ -37,6 +37,7 @@ export default function Home() {
   const [summary, setSummary] = useState<FinalSummary | null>(null);
   const [revisedDocument, setRevisedDocument] = useState<RevisedDocument | null>(null);
   const [isRunning, setIsRunning] = useState(false);
+  const [isRewriting, setIsRewriting] = useState(false);
   const [hasStartedDebate, setHasStartedDebate] = useState(false);
   const [currentRound, setCurrentRound] = useState(0);
   const [phase, setPhase] = useState('');
@@ -60,6 +61,7 @@ export default function Home() {
     setSummary(null);
     setRevisedDocument(null);
     setIsRunning(true);
+    setIsRewriting(false);
     setHasStartedDebate(true);
     setCurrentRound(1);
     setPhase('Red Team reviewing document...');
@@ -93,6 +95,16 @@ export default function Home() {
 
       const decoder = new TextDecoder();
       let buffer = '';
+      const upsertRound = (incoming: DebateRound) => {
+        setRounds((prev) => {
+          const idx = prev.findIndex((r) => r.roundNumber === incoming.roundNumber);
+          if (idx === -1) return [...prev, incoming].sort((a, b) => a.roundNumber - b.roundNumber);
+
+          const next = [...prev];
+          next[idx] = incoming;
+          return next;
+        });
+      };
 
       while (true) {
         const { done, value } = await reader.read();
@@ -108,12 +120,29 @@ export default function Home() {
             const event = JSON.parse(line);
             if (event.type === 'heartbeat') {
               // Keep-alive ping, ignore
+            } else if (event.type === 'redRound') {
+              const redRound = event.data as { roundNumber: number; redTeam: DebateRound['redTeam'] };
+              const placeholderRound: DebateRound = {
+                roundNumber: redRound.roundNumber,
+                redTeam: redRound.redTeam,
+                blueTeam: {
+                  summary: 'Blue Team is responding...',
+                  responses: [],
+                },
+                streamStatus: 'red-complete',
+              };
+              upsertRound(placeholderRound);
+              setCurrentRound(redRound.roundNumber);
+              setPhase(`Round ${redRound.roundNumber}: Blue Team responding...`);
             } else if (event.type === 'progress') {
               setCurrentRound(event.data.round);
               setPhase(`Round ${event.data.round}: ${event.data.phase}`);
             } else if (event.type === 'round') {
-              const round = event.data as DebateRound;
-              setRounds((prev) => [...prev, round]);
+              const round = {
+                ...(event.data as DebateRound),
+                streamStatus: 'complete' as const,
+              };
+              upsertRound(round);
               setCurrentRound(round.roundNumber + 1);
               setPhase(
                 round.roundNumber < maxRounds
@@ -122,9 +151,12 @@ export default function Home() {
               );
             } else if (event.type === 'summary') {
               setSummary(event.data as FinalSummary);
-              setPhase('Rewriting document with proposed revisions...');
+              setIsRewriting(true);
+              setPhase('Debate complete. Generating revised document...');
             } else if (event.type === 'rewrite') {
               setRevisedDocument(event.data as RevisedDocument);
+              setIsRewriting(false);
+              setPhase('Debate complete.');
             } else if (event.type === 'error') {
               throw new Error(event.data.message);
             }
@@ -138,9 +170,11 @@ export default function Home() {
         }
       }
     } catch (err) {
+      setIsRewriting(false);
       setError(err instanceof Error ? err.message : 'An unknown error occurred');
     } finally {
       setIsRunning(false);
+      setIsRewriting(false);
       setPhase('');
     }
   }, [document, contextConfig, redTeamModel, blueTeamModel, maxRounds, searchEnabled]);
@@ -243,6 +277,7 @@ export default function Home() {
           summary={summary}
           revisedDocument={revisedDocument}
           isRunning={isRunning}
+          isRewriting={isRewriting}
           hasStartedDebate={hasStartedDebate}
           error={error}
           config={{

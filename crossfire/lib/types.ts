@@ -70,6 +70,8 @@ export interface DebateRound {
   roundNumber: number;
   redTeam: RedTeamOutput;
   blueTeam: BlueTeamOutput;
+  // UI-only hint for rounds streamed before Blue Team completes.
+  streamStatus?: 'red-complete' | 'complete';
 }
 
 export interface FinalSummary {

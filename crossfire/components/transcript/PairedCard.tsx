@@ -14,9 +14,10 @@ const responseTypeColors: Record<string, { bg: string; text: string }> = {
 interface PairedCardProps {
   objection: Objection;
   response: Response | undefined;
+  bluePending?: boolean;
 }
 
-export function PairedCard({ objection, response }: PairedCardProps) {
+export function PairedCard({ objection, response, bluePending = false }: PairedCardProps) {
   return (
     <div className="rounded-lg border border-gray-200 bg-white overflow-hidden">
       {/* Red Team — Objection */}
@@ -70,7 +71,14 @@ export function PairedCard({ objection, response }: PairedCardProps) {
         </div>
       ) : (
         <div className="p-4">
-          <p className="text-[12px] text-gray-400 italic">No response recorded.</p>
+          {bluePending ? (
+            <div className="flex items-center gap-2 text-[12px] text-blue-600">
+              <span className="inline-block w-3.5 h-3.5 border-2 border-blue-200 border-t-blue-600 rounded-full animate-spin" />
+              Blue Team is responding...
+            </div>
+          ) : (
+            <p className="text-[12px] text-gray-400 italic">No response recorded.</p>
+          )}
         </div>
       )}
     </div>

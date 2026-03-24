@@ -13,6 +13,7 @@ interface OutputPanelProps {
   summary: FinalSummary | null;
   revisedDocument: RevisedDocumentType | null;
   isRunning: boolean;
+  isRewriting: boolean;
   hasStartedDebate: boolean;
   error: string | null;
   config: { clientCompany: string; documentType: string };
@@ -24,6 +25,7 @@ export function OutputPanel({
   summary,
   revisedDocument,
   isRunning,
+  isRewriting,
   hasStartedDebate,
   error,
   config,
@@ -89,7 +91,7 @@ export function OutputPanel({
   }
 
   const hasContent = rounds.length > 0;
-  const debateComplete = !isRunning && hasContent;
+  const debateComplete = summary !== null;
 
   return (
     <div className="flex flex-col h-full">
@@ -125,7 +127,7 @@ export function OutputPanel({
                   label="Revised output"
                   active={activeTab === 'revised'}
                   disabled={!revisedDocument}
-                  loading={isRunning && summary !== null && !revisedDocument}
+                  loading={isRewriting && !revisedDocument}
                   onClick={() => setActiveTab('revised')}
                 />
               </div>
@@ -159,7 +161,12 @@ export function OutputPanel({
         )}
 
         {activeTab === 'transcript' && (
-          <TranscriptView rounds={rounds} summary={summary} isRunning={isRunning} />
+          <TranscriptView
+            rounds={rounds}
+            summary={summary}
+            isRunning={isRunning}
+            isRewriting={isRewriting}
+          />
         )}
 
         {activeTab === 'revised' && revisedDocument && (
@@ -168,7 +175,7 @@ export function OutputPanel({
           </div>
         )}
 
-        {activeTab === 'revised' && !revisedDocument && isRunning && (
+        {activeTab === 'revised' && !revisedDocument && isRewriting && (
           <div className="flex items-center justify-center py-20">
             <div className="text-center">
               <div className="inline-block w-8 h-8 border-4 border-gray-200 border-t-gray-600 rounded-full animate-spin mb-4" />

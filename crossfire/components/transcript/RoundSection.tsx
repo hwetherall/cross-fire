@@ -3,9 +3,10 @@ import { PairedCard } from './PairedCard';
 
 interface RoundSectionProps {
   round: DebateRound;
+  bluePending?: boolean;
 }
 
-export function RoundSection({ round }: RoundSectionProps) {
+export function RoundSection({ round, bluePending = false }: RoundSectionProps) {
   return (
     <div className="space-y-3">
       {/* Round header */}
@@ -41,6 +42,7 @@ export function RoundSection({ round }: RoundSectionProps) {
               key={objection.id}
               objection={objection}
               response={response}
+              bluePending={bluePending}
             />
           );
         })}

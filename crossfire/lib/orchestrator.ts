@@ -20,6 +20,7 @@ import type { z } from 'zod';
 
 export type DebateEvent =
   | { type: 'progress'; data: { round: number; phase: string } }
+  | { type: 'redRound'; data: { roundNumber: number; redTeam: RedTeamOutput } }
   | { type: 'round'; data: DebateRound }
   | { type: 'summary'; data: FinalSummary }
   | { type: 'rewrite'; data: RevisedDocument };
@@ -102,6 +103,16 @@ export async function* runDebate(config: DebateConfig): AsyncGenerator<DebateEve
       0.7,
       maxTokens
     );
+
+    // Emit Red Team output immediately so the UI can render objections
+    // while Blue Team is still generating responses.
+    yield {
+      type: 'redRound',
+      data: {
+        roundNumber: round,
+        redTeam: redParsed,
+      },
+    };
 
     // Emit progress before Blue Team call
     yield { type: 'progress', data: { round, phase: 'Blue Team responding...' } };
