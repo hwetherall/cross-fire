@@ -13,13 +13,23 @@ interface DebateViewerProps {
   summary: FinalSummary | null;
   revisedDocument: RevisedDocumentType | null;
   isRunning: boolean;
+  showFirstRunCountdown: boolean;
   error: string | null;
   onExport: (format: 'json' | 'markdown') => void;
 }
 
-export function DebateViewer({ rounds, summary, revisedDocument, isRunning, error, onExport }: DebateViewerProps) {
+export function DebateViewer({
+  rounds,
+  summary,
+  revisedDocument,
+  isRunning,
+  showFirstRunCountdown,
+  error,
+  onExport,
+}: DebateViewerProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const [activeTab, setActiveTab] = useState<Tab>('transcript');
+  const [countdown, setCountdown] = useState(30);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -31,6 +41,19 @@ export function DebateViewer({ rounds, summary, revisedDocument, isRunning, erro
       setActiveTab('revised');
     }
   }, [revisedDocument]);
+
+  useEffect(() => {
+    if (!showFirstRunCountdown) {
+      setCountdown(30);
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      setCountdown((prev) => (prev > 0 ? prev - 1 : 0));
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [showFirstRunCountdown]);
 
   if (error) {
     return (
@@ -53,6 +76,31 @@ export function DebateViewer({ rounds, summary, revisedDocument, isRunning, erro
             Configure the client persona, paste a document, and run the debate. Red Team will
             critique as the client executive, Blue Team will defend as the Innovera consultant.
           </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (showFirstRunCountdown) {
+    return (
+      <div className="flex items-center justify-center h-full p-8">
+        <div className="w-full max-w-lg rounded-xl border border-blue-100 bg-white p-8 shadow-sm">
+          <div className="flex items-center justify-between mb-4">
+            <p className="text-sm font-medium text-blue-700">Preparing Debate</p>
+            <span className="inline-flex items-center rounded-full bg-blue-50 px-3 py-1 text-sm font-semibold text-blue-700">
+              {countdown}s
+            </span>
+          </div>
+          <h2 className="text-xl font-semibold text-gray-900 mb-2">First run is warming up</h2>
+          <p className="text-sm text-gray-600 mb-5">
+            We are loading models and starting Round 1. This usually takes around 30 seconds.
+          </p>
+          <div className="h-2 w-full overflow-hidden rounded-full bg-blue-100">
+            <div
+              className="h-full rounded-full bg-blue-600 transition-all duration-1000"
+              style={{ width: `${((30 - countdown) / 30) * 100}%` }}
+            />
+          </div>
         </div>
       </div>
     );

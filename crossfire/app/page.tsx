@@ -37,6 +37,7 @@ export default function Home() {
   const [summary, setSummary] = useState<FinalSummary | null>(null);
   const [revisedDocument, setRevisedDocument] = useState<RevisedDocument | null>(null);
   const [isRunning, setIsRunning] = useState(false);
+  const [hasStartedDebate, setHasStartedDebate] = useState(false);
   const [currentRound, setCurrentRound] = useState(0);
   const [phase, setPhase] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -59,6 +60,7 @@ export default function Home() {
     setSummary(null);
     setRevisedDocument(null);
     setIsRunning(true);
+    setHasStartedDebate(true);
     setCurrentRound(1);
     setPhase('Red Team reviewing document...');
 
@@ -241,6 +243,7 @@ export default function Home() {
           summary={summary}
           revisedDocument={revisedDocument}
           isRunning={isRunning}
+          showFirstRunCountdown={isRunning && rounds.length === 0 && hasStartedDebate}
           error={error}
           onExport={handleExport}
         />
