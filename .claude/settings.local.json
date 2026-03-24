@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx create-next-app@latest crossfire --typescript --tailwind --eslint --app --src=no --import-alias=\"@/*\" --use-pnpm --no-turbopack)",
+      "Bash(rm -rf crossfire)",
+      "Bash(npx create-next-app@latest crossfire --typescript --tailwind --eslint --app --src=no --import-alias=\"@/*\" --use-pnpm --no-turbopack --no-rc 2)",
+      "Bash(1:*)",
+      "Bash(pnpm add:*)",
+      "Bash(npx next:*)",
+      "Bash(find '/c/Users/hweth/OneDrive/Desktop/Innovera/Rapid Prototyping/red-team/crossfire' -maxdepth 3 -type f ! -path */node_modules/* ! -path */.next/*)",
+      "Bash(npx tsc:*)"
+    ]
+  }
+}

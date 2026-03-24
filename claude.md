@@ -1,0 +1,990 @@
+# Innovera Debate Engine — claude.md
+
+## Project Overview
+
+**Name:** Innovera Debate Engine (codename: `crossfire`)
+**Purpose:** A tool that simulates a structured conversation between a consulting client (Red Team) and an Innovera consultant (Blue Team) by having two LLMs critique and defend a deliverable document. The goal is to stress-test Innovera's outputs before they reach the real client.
+
+**Core metaphor:** Imagine you're watching a consultant present to a skeptical C-Suite executive, and you get to observe the entire Q&A — the pushback, the defense, the concessions, the "actually, you're right" moments. That's what this tool produces.
+
+### What this is NOT
+- Not a general chatbot or co-pilot
+- Not a document editor — it critiques documents, it doesn't rewrite them
+- Not a fact-checker (though it may surface factual concerns)
+
+### What this produces
+The tool generates three distinct outputs:
+1. **Debate transcript** — the full exchange, useful for understanding reasoning
+2. **Revision checklist** — concrete items to fix, mechanically derived from the debate
+3. **Escalation brief** — unresolved disagreements framed as client-meeting prep, LLM-generated
+
+The transcript is the raw material. The checklist and brief are the refined products that the Innovera team actually uses.
+
+---
+
+## Tech Stack
+
+| Layer | Technology | Notes |
+|-------|-----------|-------|
+| Framework | Next.js 14+ (App Router) | TypeScript throughout |
+| Styling | Tailwind CSS | Minimal custom CSS |
+| LLM Routing | OpenRouter API | Multi-model support via single API |
+| Search (optional) | Tavily or Perplexity API | Triggered sparingly when Red Team flags factual claims |
+| Deployment | Vercel | Edge functions for streaming |
+| Package Manager | pnpm | Preferred |
+| State | React state + URL params | No database needed — sessions are ephemeral |
+
+---
+
+## Architecture
+
+### High-Level Flow
+
+```
+User Input (document + context config)
+    ↓
+Debate Orchestrator (server-side API route)
+    ↓
+┌─── Round Loop (1..N) ──────────────────────────────┐
+│                                                      │
+│  Red Team LLM  →  Structured Critique (JSON)         │
+│       ↓                                              │
+│  [Optional] Web search for flagged factual claims    │
+│       ↓                                              │
+│  Blue Team LLM →  Point-by-Point Response (JSON)     │
+│       ↓                                              │
+│  Resolution Check (tag resolved items)               │
+│       ↓                                              │
+│  Feed unresolved items + context → next round        │
+│                                                      │
+└──────────────────────────────────────────────────────┘
+    ↓
+Output Generation
+  ├── Debate Transcript (full structured exchange)
+  ├── Revision Checklist (mechanical — filter fix/concede items)
+  └── Escalation Brief (LLM-synthesized from unresolved items)
+```
+
+### Key Design Decisions
+
+**1. Red and Blue use different model families.**
+Same model debating itself converges too quickly — it agrees with its own reasoning patterns. Different families produce genuinely different analytical lenses. Opus as Red Team (surgical, thorough critique) and GPT-5.4 Pro as Blue Team (assertive, structured defense) is the default pairing. Both are selectable in the UI.
+
+**2. Both teams output structured JSON.**
+Each Red objection is a discrete item with a category, severity, quote, and explanation. Each Blue response maps to an objection by ID with a response type and resolution status. This enables point-by-point tracking, category statistics, and mechanical derivation of the revision checklist.
+
+**3. Rounds build on full conversation history.**
+Each round's prompt includes the complete prior exchange so both sides maintain context. The orchestrator assembles the full thread before each call.
+
+**4. Web search is triggered sparingly.**
+Only when the Red Team explicitly flags a claim as potentially factually incorrect (`requiresSearch: true`). The orchestrator calls Tavily/Perplexity, injects the result as supplementary context for the next Blue Team turn. Not every round, not every objection.
+
+**5. The Red Team prompt adapts lightly by document type.**
+The persona stays the same. The five objection categories stay the same. But a short "review lens" paragraph shifts the evaluative frame depending on whether the document is a decision memo, a research chapter, or a strategy document.
+
+**6. Three output layers, two derivation methods.**
+The revision checklist is derived mechanically (filter for `fix` and `concede` responses — no LLM call needed). The escalation brief is generated by a final LLM call that synthesizes unresolved disagreements into client-meeting prep. The transcript is the raw structured data.
+
+---
+
+## Model Configuration
+
+### `lib/models.ts`
+
+```typescript
+export const MODELS = {
+  'opus-4.6': {
+    id: 'anthropic/claude-opus-4.6',
+    name: 'Claude Opus 4.6',
+    provider: 'Anthropic',
+    note: 'Thorough, precise reasoning — strong as Red Team'
+  },
+  'gpt-5.4-pro': {
+    id: 'openai/gpt-5.4',
+    name: 'GPT-5.4 Pro',
+    provider: 'OpenAI',
+    note: 'Assertive, structured argumentation — strong as Blue Team'
+  },
+  'gemini-3.1-pro': {
+    id: 'google/gemini-3.1-pro-preview',
+    name: 'Gemini 3.1 Pro',
+    provider: 'Google',
+    note: 'Broad knowledge base — useful for either role'
+  }
+} as const
+
+export const DEFAULT_PAIRING = {
+  redTeam: 'opus-4.6',
+  blueTeam: 'gpt-5.4-pro'
+}
+```
+
+**IMPORTANT:** Model strings on OpenRouter change. Before starting development, visit https://openrouter.ai/models and confirm the exact identifiers. This file is the single source of truth — update it here and nowhere else.
+
+---
+
+## Data Structures
+
+### Context Configuration
+
+```typescript
+interface DebateConfig {
+  // Document
+  document: string;
+  documentType: 'exec-summary' | 'market-research' | 'strategy' | 'financial-model' | 'custom';
+
+  // Client persona (Red Team)
+  clientCompany: string;
+  clientIndustry: string;
+  clientRole: string;
+  clientContext?: string;
+  eslEnabled: boolean;
+
+  // Models (selectable in UI)
+  redTeamModel: string;       // OpenRouter model ID
+  blueTeamModel: string;      // OpenRouter model ID
+
+  // Debate parameters
+  maxRounds: number;          // Default 3, max 8
+  searchEnabled: boolean;     // Allow web search for fact-checking
+}
+```
+
+### Objection Taxonomy
+
+```typescript
+type ObjectionCategory =
+  | 'clarification'   // Client needs more information to understand
+  | 'cosmetic'        // Writing, structure, formatting could be improved
+  | 'gap'             // Something important is missing from the analysis
+  | 'error'           // Something is factually wrong or logically flawed
+  | 'disagreement';   // Client disagrees with a strategic/analytical conclusion
+
+type ObjectionSeverity = 'low' | 'medium' | 'high' | 'critical';
+```
+
+**Severity definitions (included in Red Team prompt):**
+- **Critical** — This would stop me from approving the document. A wrong number that changes the conclusion, a missing risk that could sink the venture, a recommendation that contradicts the evidence.
+- **High** — This materially weakens the document's credibility. I'd send it back for revision before sharing it with my board or peers.
+- **Medium** — This is a real issue but doesn't change the core argument. I'd want it fixed but wouldn't hold up the process.
+- **Low** — Minor friction. I noticed it, it mildly annoyed me, but it doesn't affect my confidence in the analysis.
+
+### Objection Structure
+
+```typescript
+interface Objection {
+  id: string;                        // "R1-01" (Round 1, item 1)
+  category: ObjectionCategory;
+  severity: ObjectionSeverity;
+  quote: string;                     // Exact text from the document being challenged
+  objection: string;                 // The concern, written in the client's voice
+  suggestedResolution?: string;      // Optional: what Red Team thinks should change
+  requiresSearch?: boolean;          // Flag if web search would help verify
+}
+```
+
+### Response Structure
+
+```typescript
+type ResponseType =
+  | 'fix'            // Acknowledges issue, proposes concrete change
+  | 'defend'         // Explains why current approach is correct
+  | 'concede'        // Agrees Red Team is right — this is a real problem
+  | 'partial'        // Partially agrees — some merit but not the full objection
+  | 'escalate';      // Needs real client input — can't be resolved in simulation
+
+type ResolutionStatus = 'resolved' | 'unresolved' | 'escalated';
+
+interface Response {
+  objectionId: string;               // Maps to Objection.id
+  responseType: ResponseType;
+  explanation: string;               // Blue Team's response in Innovera's voice
+  proposedChange?: string;           // If fix: what specifically changes
+  status: ResolutionStatus;
+}
+```
+
+### Round Structure
+
+```typescript
+interface DebateRound {
+  roundNumber: number;
+  redTeam: {
+    objections: Objection[];
+    resolvedFromPrior?: string[];     // IDs now accepted after Blue's response
+    summary: string;
+  };
+  blueTeam: {
+    responses: Response[];
+    summary: string;
+  };
+}
+```
+
+### Final Output Structure
+
+```typescript
+interface DebateResult {
+  config: DebateConfig;
+  rounds: DebateRound[];
+
+  // Output 1: Transcript is the rounds array
+
+  // Output 2: Revision checklist (mechanically derived)
+  revisionChecklist: RevisionItem[];
+
+  // Output 3: Escalation brief (LLM-generated)
+  escalationBrief: EscalationBrief | null;  // null if nothing unresolved
+
+  // Statistics
+  stats: DebateStats;
+}
+
+interface RevisionItem {
+  id: string;
+  category: ObjectionCategory;
+  severity: ObjectionSeverity;
+  quote: string;                    // What passage in the document to find
+  issue: string;                    // What's wrong (from Red Team)
+  fix: string;                      // What to change (from Blue Team's proposedChange)
+}
+
+interface EscalationBrief {
+  summary: string;                  // 2-3 paragraph executive summary
+  items: {
+    topic: string;
+    innoveraPosition: string;
+    clientPerspective: string;
+    recommendedApproach: string;
+  }[];
+}
+
+interface DebateStats {
+  totalObjections: number;
+  resolved: number;
+  unresolved: number;
+  escalated: number;
+  byCategory: Record<ObjectionCategory, number>;
+  bySeverity: Record<ObjectionSeverity, number>;
+}
+```
+
+### Deriving the Revision Checklist (mechanical — no LLM call)
+
+```typescript
+function deriveRevisionChecklist(rounds: DebateRound[]): RevisionItem[] {
+  const items: RevisionItem[] = []
+
+  for (const round of rounds) {
+    for (const response of round.blueTeam.responses) {
+      if (response.responseType === 'fix' || response.responseType === 'concede') {
+        const objection = round.redTeam.objections.find(o => o.id === response.objectionId)
+        if (objection) {
+          items.push({
+            id: objection.id,
+            category: objection.category,
+            severity: objection.severity,
+            quote: objection.quote,
+            issue: objection.objection,
+            fix: response.proposedChange || response.explanation
+          })
+        }
+      }
+    }
+  }
+
+  // Deduplicate by quote (same passage might be raised across rounds)
+  // Sort by severity: critical > high > medium > low
+  return deduplicateAndSort(items)
+}
+```
+
+---
+
+## System Prompts
+
+### Red Team System Prompt — Round 1
+
+```
+You are simulating a senior executive at {{clientCompany}}, reviewing a deliverable from Innovera, an innovation consulting firm. You are seeing this document for the first time.
+
+## Your Profile
+- **Role:** {{clientRole}} at {{clientCompany}}
+- **Industry:** {{clientIndustry}}
+- **Expertise:** Deep knowledge of your company, industry, competitors, and internal capabilities. You understand your market, your customers, and your organization's politics.
+- **Weakness:** You are NOT an innovation methodology expert. You don't know frameworks like Jobs-to-be-Done, Lean Startup, or Blue Ocean Strategy — and you shouldn't pretend to. If the document uses innovation jargon and you find it unclear, say so.
+{{#if eslEnabled}}
+- **Language:** English is NOT your first language. You are fluent but:
+  - Complex sentence structures or nested clauses frustrate you
+  - Idioms, cultural references, and wordplay may not land
+  - You prefer direct, clear language over elegant prose
+  - Acronyms that aren't defined on first use confuse you
+  - You may misread ambiguous phrasing — flag it rather than assume
+{{/if}}
+{{#if clientContext}}
+- **Additional Context:** {{clientContext}}
+{{/if}}
+
+## Review Lens
+{{reviewLens}}
+
+## What to Look For
+Identify every place where the document has a problem. Each objection must fall into exactly one category:
+
+1. **clarification** — You don't fully understand what's being said, or the reasoning isn't clear enough for you to act on it
+2. **cosmetic** — The writing, structure, or presentation could be improved (confusing ordering, poor formatting, inconsistent terminology, unexplained jargon)
+3. **gap** — Something important is missing. A risk not addressed, a competitor not mentioned, a market dynamic ignored, an internal capability overlooked
+4. **error** — Something is factually wrong or logically inconsistent. A number that doesn't add up, a claim that contradicts your knowledge of the industry, a mischaracterization of your company's capabilities
+5. **disagreement** — You disagree with the strategic conclusion or analytical framing. Not because it's wrong per se, but because your perspective as an insider leads you to a different conclusion. These are the most valuable items — explain your reasoning fully.
+
+## Severity Calibration
+Every objection must be assigned a severity. Use these definitions precisely:
+- **critical** — This would stop me from approving the document. A wrong number that changes the conclusion, a missing risk that could sink the venture, a recommendation that contradicts its own evidence.
+- **high** — This materially weakens the document's credibility. I'd send it back for revision before sharing it with my board or peers.
+- **medium** — A real issue but doesn't change the core argument. I'd want it fixed but wouldn't hold up the process for it.
+- **low** — Minor friction. I noticed it, it mildly annoyed me, but it doesn't affect my confidence in the analysis.
+
+## Rules
+- **Be specific.** Quote the exact passage you're challenging.
+- **Be tough but fair.** You're a demanding executive, not a hostile one. If something is strong, you can acknowledge it briefly — but your job is to find problems.
+- **Don't manufacture objections.** If an area of the document is genuinely solid, don't invent issues to hit a quota. An executive who raises phantom concerns loses credibility. Quality over quantity.
+- **Prioritize.** A real executive in a 30-minute review would catch 5-12 things, not 30. Focus on what matters most.
+- **Flag factual verification needs.** When you suspect a specific claim may be factually incorrect, set requiresSearch to true. Use this sparingly — only for concrete factual claims you genuinely doubt, not for strategic disagreements.
+
+## Output Format
+Respond with valid JSON only. No markdown wrapping, no preamble, no explanation outside the JSON.
+
+{
+  "objections": [
+    {
+      "id": "R1-01",
+      "category": "gap|error|clarification|cosmetic|disagreement",
+      "severity": "low|medium|high|critical",
+      "quote": "exact text from the document",
+      "objection": "your concern, written in first person as the executive",
+      "suggestedResolution": "optional — what you think should change",
+      "requiresSearch": false
+    }
+  ],
+  "summary": "1-2 sentence overall assessment of the document"
+}
+
+## The Document
+{{document}}
+```
+
+### Review Lens by Document Type
+
+Injected into `{{reviewLens}}` based on `documentType`. Stored in `lib/lenses.ts`.
+
+**exec-summary:**
+```
+You are being asked to approve or reject a strategic recommendation. Read this as a decision-maker.
+- Is the recommendation clear and unambiguous?
+- Is the evidence sufficient to justify the conclusion?
+- Would you stake your name on this recommendation in a board meeting?
+- Are the action items concrete enough for your team to execute?
+- Does the rationale hold together, or does it contradict itself?
+```
+
+**market-research:**
+```
+You are being asked to trust this analysis as the foundation for a major investment decision. Read this as someone who needs to bet real capital on these numbers.
+- Are the market sizing figures credible? Do the sources inspire confidence?
+- Does the segmentation match your lived experience of this market?
+- Are competitive dynamics accurately characterized?
+- Are risks and constraints honestly presented, or is the analysis selling you on an outcome?
+- Would this analysis survive scrutiny from your CFO or board?
+```
+
+**strategy:**
+```
+You are being asked to change how your organization operates based on this strategy. Read this as an operator, not an analyst.
+- Is this actionable? Could you hand it to your team on Monday and have them begin executing?
+- Does it account for your internal politics, budget cycles, and organizational constraints?
+- Are the proposed timelines realistic given how your company actually moves?
+- Does it address who owns what, and where authority needs to be granted?
+```
+
+**financial-model:**
+```
+You are being asked to commit capital based on these projections. Read this as a fiduciary.
+- Are the assumptions clearly stated and individually defensible?
+- Do the numbers reconcile across sections? Does the math actually check out?
+- Are sensitivity analyses included for the assumptions that matter most?
+- Is the downside case honest, or is it an optimistic scenario relabeled as "conservative"?
+```
+
+**custom:**
+```
+Review this document with your full expertise. Focus on whether the analysis is sound, the conclusions are justified, and the document is ready for decision-makers at your level.
+```
+
+### Red Team Prompt — Rounds 2+
+
+System prompt stays the same. The user message changes:
+
+```
+The Innovera team has responded to your objections from Round {{previousRound}}. Read their responses carefully.
+
+## Rules for Follow-Up
+- **If their response satisfies you:** Add the objection ID to "resolvedFromPrior". Let it go — don't relitigate resolved items.
+- **If their response is insufficient:** You may raise the objection again, but you MUST explain what specifically was wrong or missing in their response. Simply repeating your original objection with the same reasoning is not allowed. Articulate why their defense failed — what did they miss, what was hand-wavy, what evidence did they fail to provide.
+- **If their response reveals NEW issues:** Add new objections with new IDs (R{{roundNumber}}-XX). Sometimes a defense exposes a weakness that wasn't visible before — those are fair game.
+- **Be fair:** If they've addressed something well, give them credit. Stubbornness without substance is not credible executive behavior.
+
+## Output Format
+{
+  "objections": [
+    {
+      "id": "R{{roundNumber}}-01",
+      "category": "...",
+      "severity": "...",
+      "quote": "...",
+      "objection": "... if continuing a prior objection, must explain why Blue Team's response was insufficient ...",
+      "suggestedResolution": "...",
+      "requiresSearch": false
+    }
+  ],
+  "resolvedFromPrior": ["R1-02", "R1-05"],
+  "summary": "1-2 sentence assessment of this round"
+}
+
+## Blue Team Responses (Round {{previousRound}})
+{{blueTeamResponses}}
+
+## Full Prior Exchange
+{{fullHistory}}
+
+## The Original Document
+{{document}}
+```
+
+### Blue Team System Prompt
+
+```
+You are a senior consultant at Innovera, an innovation consulting firm. A client executive has reviewed your deliverable and raised objections. You are now responding.
+
+## Your Profile
+- **Firm:** Innovera — specialists in AI, LLMs, and Innovation strategy
+- **Credentials:** 50+ combined years building unicorn companies, running major VCs (like Mayfield), teaching at Stanford, writing strategy for major financial institutions, ex-MBB consulting
+- **Strengths:** Innovation methodology, strategic frameworks, market analysis, technology assessment, business model design
+- **Honest limitation:** You are NOT overnight experts on every domain. The client works in {{clientIndustry}} and knows their industry, company, and internal politics better than you do. If they flag something domain-specific and you're not sure, say so. Intellectual honesty is Innovera's brand — bluffing destroys credibility faster than admitting uncertainty.
+
+## How to Respond
+
+### When to concede quickly
+Concede immediately when:
+- The client found a genuine factual error — own it, don't equivocate
+- The client's insider knowledge reveals something your external research couldn't capture (e.g., "Samsung Heavy Industries is a separate public entity — you can't assume cross-divisional leverage without a formal agreement")
+- The document has a clear structural or writing issue — these are easy wins, be gracious
+
+Fast, clean concessions build credibility for the moments when you need to push back.
+
+### When to stand firm
+Defend your position when:
+- Your methodology is sound and the client's objection is based on unfamiliarity with the framework
+- The client's "disagreement" is actually a risk-averse instinct that the analysis has already accounted for
+- The objection conflates scope (what the document chose not to cover) with a gap (what it should have covered but didn't)
+
+When defending, provide reasoning — not assertions. "We stand by this because..." not just "This is correct."
+
+### When to escalate
+Use "escalate" when:
+- The objection hinges on internal information you genuinely cannot assess (e.g., budget authority, political dynamics, undisclosed partnerships)
+- The disagreement is genuinely a matter of strategic judgment where reasonable people could differ, and resolving it requires a real conversation with real stakes
+
+Escalation is not a dodge — it's intellectual honesty about the limits of simulation.
+
+{{#if searchResults}}
+## Supplementary Research
+The following search results were retrieved to help verify specific factual claims:
+{{searchResults}}
+Use these to strengthen your responses where relevant. Do not blindly defer to search results — assess their relevance and reliability.
+{{/if}}
+
+## Rules
+- Respond to EVERY objection. Do not skip items.
+- Be direct and professional. Not sycophantic, not defensive.
+- When conceding, be specific about what changes in the document. When defending, provide evidence and reasoning.
+- If an objection is based on a genuine misunderstanding, you can clarify diplomatically — but consider whether the misunderstanding itself reveals a clarity problem in the document.
+- Mark each response with a resolution status.
+
+## Output Format
+Respond with valid JSON only. No markdown wrapping, no preamble, no explanation outside the JSON.
+
+{
+  "responses": [
+    {
+      "objectionId": "R1-01",
+      "responseType": "fix|defend|concede|partial|escalate",
+      "explanation": "your response as the Innovera consultant",
+      "proposedChange": "if responseType is fix or concede: what specifically changes in the document. Be concrete — not 'we should add more detail' but 'add a paragraph in the Risk section addressing X with Y data point'",
+      "status": "resolved|unresolved|escalated"
+    }
+  ],
+  "summary": "1-2 sentence overall response to this round"
+}
+
+## The Original Document
+{{document}}
+
+## Client Objections (Round {{roundNumber}})
+{{objections}}
+
+{{#if priorRounds}}
+## Prior Exchange
+{{priorRounds}}
+{{/if}}
+```
+
+### Escalation Brief Prompt
+
+Runs once after the debate completes. Only called if unresolved/escalated items exist.
+
+```
+You are a senior partner at Innovera preparing your consulting team for a real client meeting. A simulated debate has been run against the deliverable below, and several objections remain unresolved or were escalated.
+
+Your job is to write a concise escalation brief that:
+1. Summarizes the overall debate outcome in 2-3 paragraphs
+2. Lists each unresolved/escalated item as a discrete topic
+3. For each topic, clearly states: Innovera's position, the client's likely perspective, and the recommended approach for the real meeting
+
+Write this for an internal Innovera audience. Be candid. If we're wrong somewhere, say so. If the client will push hard on something and we should flex, say that too. If we should hold firm, explain why.
+
+Tone: direct, professional, no jargon. This brief will be read in a 5-minute pre-meeting huddle.
+
+## The Document
+{{document}}
+
+## Full Debate Transcript
+{{fullTranscript}}
+
+## Unresolved & Escalated Items
+{{unresolvedItems}}
+
+## Output Format
+Respond with valid JSON only.
+
+{
+  "summary": "2-3 paragraph executive summary of the debate outcome and document readiness",
+  "items": [
+    {
+      "topic": "Short label (5-8 words max)",
+      "innoveraPosition": "What we argued and why",
+      "clientPerspective": "What they're likely to push on",
+      "recommendedApproach": "How to handle this in the real meeting"
+    }
+  ]
+}
+```
+
+---
+
+## Orchestrator Logic
+
+### API Route: `app/api/debate/route.ts`
+
+```
+POST /api/debate
+Body: DebateConfig
+Response: Server-Sent Events stream of DebateEvent objects
+```
+
+### Event Types
+
+```typescript
+type DebateEvent =
+  | { type: 'status'; message: string }
+  | { type: 'round'; data: DebateRound }
+  | { type: 'checklist'; data: RevisionItem[] }
+  | { type: 'brief'; data: EscalationBrief }
+  | { type: 'complete'; data: DebateStats }
+  | { type: 'error'; message: string }
+```
+
+### Orchestrator Pseudocode
+
+```typescript
+async function* runDebate(config: DebateConfig): AsyncGenerator<DebateEvent> {
+  let history: DebateRound[] = []
+
+  for (let round = 1; round <= config.maxRounds; round++) {
+
+    // 1. Red Team
+    yield { type: 'status', message: `Round ${round}: Red Team reviewing...` }
+    const redPrompt = buildRedPrompt(config, round, history)
+    const redResponse = await callWithRetry(
+      config.redTeamModel, redPrompt, RedTeamSchema, { temperature: 0.7 }
+    )
+
+    // 2. Optional web search (sparingly)
+    let searchResults = null
+    if (config.searchEnabled) {
+      const searchItems = redResponse.objections.filter(o => o.requiresSearch)
+      if (searchItems.length > 0) {
+        yield { type: 'status', message: `Verifying ${searchItems.length} claim(s)...` }
+        searchResults = await runSearches(searchItems)
+      }
+    }
+
+    // 3. Blue Team
+    yield { type: 'status', message: `Round ${round}: Blue Team responding...` }
+    const bluePrompt = buildBluePrompt(config, round, redResponse, history, searchResults)
+    const blueResponse = await callWithRetry(
+      config.blueTeamModel, bluePrompt, BlueTeamSchema, { temperature: 0.4 }
+    )
+
+    // 4. Emit round
+    const debateRound: DebateRound = {
+      roundNumber: round,
+      redTeam: redResponse,
+      blueTeam: blueResponse
+    }
+    history.push(debateRound)
+    yield { type: 'round', data: debateRound }
+
+    // 5. Early termination
+    const allResolved = blueResponse.responses.every(r => r.status === 'resolved')
+    const noNewObjections = round > 1 && redResponse.objections.length === 0
+    if ((allResolved || noNewObjections) && round > 1) {
+      yield { type: 'status', message: 'All items resolved — ending debate early.' }
+      break
+    }
+  }
+
+  // 6. Revision checklist (mechanical)
+  const checklist = deriveRevisionChecklist(history)
+  yield { type: 'checklist', data: checklist }
+
+  // 7. Escalation brief (LLM — only if unresolved items)
+  const unresolved = getUnresolvedItems(history)
+  if (unresolved.length > 0) {
+    yield { type: 'status', message: 'Generating escalation brief...' }
+    const briefPrompt = buildEscalationBriefPrompt(config, history, unresolved)
+    const brief = await callWithRetry(
+      config.blueTeamModel, briefPrompt, EscalationBriefSchema, { temperature: 0.3 }
+    )
+    yield { type: 'brief', data: brief }
+  }
+
+  // 8. Stats
+  yield { type: 'complete', data: computeStats(history) }
+}
+```
+
+### Error Handling & JSON Retry
+
+```typescript
+import { jsonrepair } from 'jsonrepair'
+import { ZodSchema } from 'zod'
+
+async function callWithRetry<T>(
+  model: string,
+  messages: Message[],
+  schema: ZodSchema<T>,
+  options?: { temperature?: number; maxRetries?: number }
+): Promise<T> {
+  const maxRetries = options?.maxRetries ?? 2
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const raw = await callOpenRouter(model, messages, { temperature: options?.temperature })
+
+    // Strip markdown fences
+    const cleaned = raw
+      .replace(/^```json\s*/i, '')
+      .replace(/^```\s*/i, '')
+      .replace(/\s*```$/i, '')
+      .trim()
+
+    try {
+      const repaired = jsonrepair(cleaned)
+      const parsed = JSON.parse(repaired)
+      const result = schema.safeParse(parsed)
+
+      if (result.success) return result.data
+
+      // Retry with validation error feedback
+      messages = [
+        ...messages,
+        { role: 'assistant', content: raw },
+        {
+          role: 'user',
+          content: `Your response had validation errors:\n${result.error.issues.map(i => `- ${i.path.join('.')}: ${i.message}`).join('\n')}\nPlease fix and respond with valid JSON only.`
+        }
+      ]
+    } catch (e) {
+      // JSON parse failed entirely — retry with generic feedback
+      messages = [
+        ...messages,
+        { role: 'assistant', content: raw },
+        {
+          role: 'user',
+          content: 'Your response was not valid JSON. Please respond with valid JSON only — no markdown fences, no preamble.'
+        }
+      ]
+    }
+  }
+
+  throw new Error(`Failed to get valid response after ${maxRetries + 1} attempts`)
+}
+```
+
+**JSON reliability by model:**
+- **Opus:** Very reliable with `response_format: json_object`. Rarely needs repair.
+- **GPT-5.4 Pro:** Generally reliable. Occasionally wraps in markdown fences.
+- **Gemini:** Less reliable. More likely to include preamble. The strip + repair pipeline is especially important.
+
+---
+
+## OpenRouter Integration
+
+### `lib/openrouter.ts`
+
+```typescript
+const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions'
+
+async function callOpenRouter(
+  model: string,
+  messages: { role: string; content: string }[],
+  options?: { temperature?: number; maxTokens?: number }
+): Promise<string> {
+  const response = await fetch(OPENROUTER_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+      'HTTP-Referer': process.env.NEXT_PUBLIC_APP_URL,
+      'X-Title': 'Innovera Debate Engine'
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      temperature: options?.temperature ?? 0.6,
+      max_tokens: options?.maxTokens ?? 4096,
+      response_format: { type: 'json_object' }
+    })
+  })
+
+  if (!response.ok) {
+    const errorText = await response.text()
+    throw new Error(`OpenRouter ${response.status}: ${errorText}`)
+  }
+
+  const data = await response.json()
+  return data.choices[0].message.content
+}
+```
+
+### Temperature Settings
+- **Red Team: 0.7** — Creative, unexpected objections. Higher temperature produces more surprising critique.
+- **Blue Team: 0.4** — Precise, measured defense. Lower temperature prevents rambling.
+- **Escalation Brief: 0.3** — Synthesis document. Crisp and reliable.
+
+---
+
+## File Structure
+
+```
+crossfire/
+├── app/
+│   ├── layout.tsx
+│   ├── page.tsx                   # Main UI — input + debate viewer
+│   ├── api/
+│   │   └── debate/
+│   │       └── route.ts           # Debate orchestrator API route
+│   └── globals.css
+├── components/
+│   ├── DocumentInput.tsx           # Markdown/text textarea with optional preview
+│   ├── ContextPanel.tsx            # Client persona config
+│   ├── ModelSelector.tsx           # Red/Blue model dropdowns
+│   ├── DebateControls.tsx          # Start button, round cap slider, search toggle
+│   ├── DebateViewer.tsx            # Main transcript display
+│   ├── RoundCard.tsx               # Single round: Red + Blue paired
+│   ├── ObjectionCard.tsx           # Individual objection with category badge + severity
+│   ├── ResponseCard.tsx            # Blue response with resolution indicator
+│   ├── RevisionChecklist.tsx       # Actionable fix list
+│   ├── EscalationBrief.tsx         # Unresolved items as meeting prep
+│   ├── DebateSummary.tsx           # Final stats
+│   └── CategoryBadge.tsx           # Colored badge component
+├── lib/
+│   ├── openrouter.ts              # OpenRouter API wrapper
+│   ├── models.ts                  # Model definitions and defaults
+│   ├── orchestrator.ts            # Core debate loop
+│   ├── prompts.ts                 # System prompt builders
+│   ├── lenses.ts                  # Document type review lens paragraphs
+│   ├── search.ts                  # Tavily/Perplexity integration
+│   ├── schemas.ts                 # Zod schemas
+│   ├── types.ts                   # TypeScript interfaces
+│   ├── derive.ts                  # Mechanical derivation (checklist, stats)
+│   └── utils.ts                   # JSON parsing, repair, helpers
+├── .env.local
+├── package.json
+├── tailwind.config.ts
+├── tsconfig.json
+└── next.config.js
+```
+
+---
+
+## UI Design
+
+### Layout
+Single-page app. Two panels on desktop, stacked on mobile.
+
+**Left Panel (~35% width): Input & Config**
+- Large textarea for document (markdown or plain text)
+- Collapsible context section:
+  - Company name, Industry, Client role (text inputs)
+  - Document type (dropdown)
+  - ESL toggle (switch)
+  - Additional context (textarea, optional)
+- Model selectors: two dropdowns (Red Team, Blue Team)
+- Round cap: slider, 1-8, default 3
+- Web search toggle: switch, default off
+- "Run Debate" button
+
+**Right Panel (~65% width): Output**
+Three tabs or scrollable sections:
+1. **Transcript** — rounds displayed sequentially with paired Red/Blue cards
+2. **Revision Checklist** — sorted by severity, actionable items only
+3. **Escalation Brief** — meeting-prep document (only if unresolved items exist)
+
+### Visual Language
+- **Red Team:** Coral accent — left-aligned in pairings
+- **Blue Team:** Blue accent — indented in pairings
+- **Category badges:** Teal (clarification), Amber (cosmetic), Coral (gap), Red (error), Purple (disagreement)
+- **Severity pills:** Small colored indicators on each objection card
+- **Resolution status:** Green check (resolved), Orange warning (unresolved), Purple flag (escalated)
+
+### Streaming UX
+Each round takes 30-90 seconds. Clear progress indicators:
+1. "Round 1: Red Team reviewing document..."
+2. "Round 1: Blue Team responding..."
+3. Round card appears when both complete
+4. Auto-scroll to new content
+5. After rounds: "Generating revision checklist..." → "Generating escalation brief..."
+
+---
+
+## Handling Long Documents
+
+Priority order:
+1. **Use large-context models.** All three targets support 128k+ tokens.
+2. **Compress prior history in later rounds.** Keep current round full; summarize older rounds to essentials (what was raised, what resolved, what's open).
+3. **Never split the document.** Holistic review is the point.
+
+---
+
+## ESL Mode
+
+When `eslEnabled` is true, the Red Team persona shifts:
+
+1. **Language sensitivity increases.** Flags complex sentences, undefined acronyms, idioms, jargon.
+2. **Communication style shifts.** Objections written in simpler, more direct English.
+3. **Cosmetic threshold lowers.** Passive voice, dense paragraphs, inconsistent terminology become legitimate objections.
+
+This is additive — strategic objections remain equally sophisticated. ESL mode doesn't dumb down the critique, it adds a language-friction layer.
+
+---
+
+## Development Sequence
+
+### Phase 1: Core Engine
+1. Next.js + TypeScript + Tailwind + pnpm setup
+2. `lib/types.ts` and `lib/schemas.ts`
+3. `lib/openrouter.ts` with error handling and retry
+4. `lib/models.ts` with verified OpenRouter IDs
+5. `lib/lenses.ts` — review lens paragraphs
+6. `lib/prompts.ts` — all prompt template builders
+7. `lib/derive.ts` — checklist derivation and stats
+8. `lib/orchestrator.ts` — full debate loop
+9. `app/api/debate/route.ts`
+10. **Test via curl with the Samsung documents. Iterate prompts until quality is right.**
+
+### Phase 2: Basic UI
+1. Input components: `DocumentInput`, `ContextPanel`, `ModelSelector`, `DebateControls`
+2. Output components: `DebateViewer`, `RoundCard`, `ObjectionCard`, `ResponseCard`
+3. Wire: form → API → display
+4. Add `RevisionChecklist` and `EscalationBrief` components
+
+### Phase 3: Polish
+1. Streaming progress indicators
+2. Badges, pills, resolution indicators
+3. `DebateSummary` with stats
+4. Export as JSON / markdown
+5. Error, loading, empty states
+6. Mobile responsive
+
+### Phase 4: Optional
+1. Tavily web search integration
+2. Side-by-side document view with highlighted passages
+3. Re-run single round with different model
+4. Session history via localStorage
+
+---
+
+## Testing & Quality
+
+### Prompt Quality Validation
+Run the orchestrator via API against the Samsung documents before building UI.
+
+**Red Team should catch things like:**
+- "You say we need 400 aerospace engineers — where does that number come from?" (clarification)
+- "Samsung Heavy Industries is a separate public entity — you can't assume cross-divisional leverage" (disagreement/gap)
+- "What about KSLV-III? Korea is developing its own launch vehicle" (gap)
+- "The $1,500–$2,500/kg cost penalty — current pricing or projected?" (clarification)
+- "You recommend rejecting deployment but list action items assuming we proceed. Which is it?" (error)
+
+If Red Team doesn't reach this specificity, the prompts need tuning.
+
+### JSON Reliability
+10 full debate runs. Target: <5% parse failure after repair. If higher, add model-specific logic.
+
+### Convergence Health
+- Round 1: 6-10 objections
+- Round 2: ~50% resolved, 1-2 new items
+- Round 3: Most remaining resolved or escalated
+
+If not converging: Blue may be too defensive, or Red may be repeating without substance.
+
+### ESL Validation
+Same document, ESL on vs off. ESL should add 2-4 language-friction items without reducing strategic quality.
+
+---
+
+## Environment Variables
+
+```
+OPENROUTER_API_KEY=sk-or-...
+TAVILY_API_KEY=tvly-...          # Optional
+NEXT_PUBLIC_APP_URL=http://localhost:3000
+```
+
+---
+
+## Known Risks & Mitigations
+
+| Risk | Mitigation |
+|------|-----------|
+| Invalid JSON from LLM | jsonrepair + Zod + retry loop (max 2) |
+| Red Team invents phantom objections | Prompt forbids it + severity calibration |
+| Blue Team concedes everything | Prompt gives explicit "when to stand firm" guidance |
+| Red Team repeats same objection | Round 2+ prompt requires new reasoning |
+| Debate doesn't converge | Hard round cap + early termination |
+| OpenRouter rate limits | Exponential backoff; sequential rounds = natural pacing |
+| Long documents hit context limits | Large-context models + history compression |
+| Model strings change on OpenRouter | Single `models.ts` file — verify before deploy |
+
+---
+
+## Out of Scope (v1)
+
+- User authentication / accounts
+- Database storage
+- Real-time collaboration
+- Document editing from debate output
+- Custom persona templates
+- PDF/DOCX input (markdown/text only)
+- Cost tracking / token dashboard
+- Multi-document debates
