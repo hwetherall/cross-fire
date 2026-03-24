@@ -8,7 +8,8 @@
       "Bash(pnpm add:*)",
       "Bash(npx next:*)",
       "Bash(find '/c/Users/hweth/OneDrive/Desktop/Innovera/Rapid Prototyping/red-team/crossfire' -maxdepth 3 -type f ! -path */node_modules/* ! -path */.next/*)",
-      "Bash(npx tsc:*)"
+      "Bash(npx tsc:*)",
+      "Bash(cd:*)"
     ]
   }
 }

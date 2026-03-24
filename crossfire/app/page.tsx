@@ -8,7 +8,7 @@ import { DocumentInput } from '@/components/DocumentInput';
 import { ContextPanel } from '@/components/ContextPanel';
 import { ModelSelector } from '@/components/ModelSelector';
 import { DebateControls } from '@/components/DebateControls';
-import { DebateViewer } from '@/components/DebateViewer';
+import { OutputPanel } from '@/components/output/OutputPanel';
 
 export default function Home() {
   // Document
@@ -30,7 +30,7 @@ export default function Home() {
 
   // Debate settings
   const [maxRounds, setMaxRounds] = useState(3);
-  const [searchEnabled, setSearchEnabled] = useState(false);
+  const [searchEnabled, setSearchEnabled] = useState(true);
 
   // Debate state
   const [rounds, setRounds] = useState<DebateRound[]>([]);
@@ -237,14 +237,18 @@ export default function Home() {
       </div>
 
       {/* Right Panel — Output */}
-      <div className="flex-1 overflow-y-auto">
-        <DebateViewer
+      <div className="flex-1 overflow-hidden">
+        <OutputPanel
           rounds={rounds}
           summary={summary}
           revisedDocument={revisedDocument}
           isRunning={isRunning}
-          showFirstRunCountdown={isRunning && rounds.length === 0 && hasStartedDebate}
+          hasStartedDebate={hasStartedDebate}
           error={error}
+          config={{
+            clientCompany: contextConfig.clientCompany,
+            documentType: contextConfig.documentType,
+          }}
           onExport={handleExport}
         />
       </div>
